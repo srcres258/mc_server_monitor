@@ -1,0 +1,10 @@
+{
+    "criteria": {
+        "player_tick": {
+            "trigger": "minecraft:tick"
+        }
+    },
+    "rewards": {
+        "function": "msm:player_tick"
+    }
+}

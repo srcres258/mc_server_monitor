@@ -1,0 +1,1 @@
+function msm:init/init
