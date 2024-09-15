@@ -1,4 +1,4 @@
-const ws = new WebSocket('ws://localhost:8766');
+const ws = new WebSocket('ws://localhost:8765');
 let id = 0;
 
 ws.onopen = function() {

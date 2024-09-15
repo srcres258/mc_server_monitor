@@ -3,7 +3,7 @@ import json
 
 
 def main():
-    with connect("ws://localhost:8766") as websocket:
+    with connect("ws://localhost:8765") as websocket:
         print("Connected to server.")
         id = 0
         while True:
