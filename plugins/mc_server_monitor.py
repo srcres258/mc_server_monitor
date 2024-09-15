@@ -25,6 +25,18 @@ PLUGIN_METADATA = {
 }
 
 
+# 定义本 MCDR 插件的配置选项
+class PluginConfig(Serializable):
+    # 与远程网站服务器通信而监听的IP地址
+    commIP: str = '127.0.0.1'
+    # 与远程网站服务器通信而监听的端口号
+    commPort: int = 8765
+    # MC服务器数据同步线程（ServerMonitorThread）的轮询间隔（单位：ms）
+    serverMonitorThreadInterval: int = 1000
+    # 远程网站服务器联络线程（WebsocketThread）的轮询间隔（单位：ms）
+    websocketThreadInterval: int = 1000
+
+
 # 当从MC服务器收到函数执行结果时执行的回调
 class MCFuncResultSchedule(object):
     def __init__(self, mc_func: str, args: dict, callback: Callable[[str, dict, int], None]):
@@ -128,9 +140,11 @@ class ServerMonitorThread(threading.Thread):
     def __init__(self, interval: int):
         super().__init__()
         self.name = 'ServerMonitorThread'
-        self.interval = interval if interval > 0 else 1000 # 默认1000ms
         self.stop_event = threading.Event()
         self.daemon = False # 本线程不是守护线程，以确保对于服务器数据同步的完整性
+
+        # 本线程的轮询间隔（ms）
+        self.interval: int = interval if interval > 0 else 1000 # 缺省值为1000ms
 
 
     def run(self) -> None:
@@ -212,12 +226,18 @@ type的种类：
 
 # 用于与远程网站服务器进行数据交流的线程
 class WebsocketThread(threading.Thread):
-    def __init__(self, interval: int):
+    def __init__(self, interval: int, ip: str, port: int):
         super().__init__()
         self.name = 'WebsocketThread'
-        self.interval = interval if interval > 0 else 1000 # 默认1000ms
         self.stop_event = threading.Event()
         self.daemon = False # 本线程不是守护线程，以确保与远程网站服务器的交流不会被异常地中断
+
+        # 本线程的轮询间隔（ms）
+        self.interval: int = interval if interval > 0 else 1000 # 缺省值为1000ms
+        # WebSocket 监听的IP地址
+        self.ip: str = ip
+        # WebSocket 监听的端口号
+        self.port: int = port
 
 
     def run(self) -> None:
@@ -227,7 +247,7 @@ class WebsocketThread(threading.Thread):
 
     async def __async_run(self) -> None:
         # 创建 websocket 服务器
-        serve = websockets.server.serve(self.__websocket_echo, 'localhost', 8766)
+        serve = websockets.server.serve(self.__websocket_echo, self.ip, self.port)
         # 在死循环内开始运行 websocket 服务器，出错了就重新启动，正常停止就退出死循环
         while True:
             try:
@@ -316,6 +336,8 @@ class WebsocketThread(threading.Thread):
         self.stop_event.set()
 
 
+# 插件配置数据
+plugin_config: PluginConfig = None
 # MCDR 的 PluginServerInterface 对象，用于与 MCDR 的相关 API 交互
 psi: PluginServerInterface = None
 # 记录当前在线玩家（玩家名称）的列表
@@ -425,6 +447,7 @@ def msm_get_data_callback(func: str, args: dict, result: int) -> None:
 
 
 def on_load(server: PluginServerInterface, old) -> None:
+    global plugin_config
     global psi
     global online_players, schedules, player_data_records
     global player_data_records_lock
@@ -432,6 +455,9 @@ def on_load(server: PluginServerInterface, old) -> None:
 
     # 保存 PluginServerInterface 对象以供全局使用
     psi = server
+
+    # 从 MCDR 加载插件配置
+    plugin_config = psi.load_config_simple('config.json', target_class=PluginConfig)
 
     # 重新加载插件时，保持原有的数据不变
     if old:
@@ -446,9 +472,13 @@ def on_load(server: PluginServerInterface, old) -> None:
     player_data_records_lock = threading.RLock()
 
     # 重建并启动相关线程
-    server_monitor_thread = ServerMonitorThread(1000) # 每1000毫秒轮询一次
+    server_monitor_thread = ServerMonitorThread(plugin_config.serverMonitorThreadInterval)
     server_monitor_thread.start()
-    websocket_thread = WebsocketThread(1000) # 每1000毫秒轮询一次
+    websocket_thread = WebsocketThread(
+        plugin_config.websocketThreadInterval,
+        plugin_config.commIP,
+        plugin_config.commPort
+    )
     websocket_thread.start()
 
     server.logger.info(f'Plugin {PLUGIN_METADATA['name']} is now loaded')
