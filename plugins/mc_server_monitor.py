@@ -462,11 +462,11 @@ def on_load(server: PluginServerInterface, old) -> None:
     # 重新加载插件时，保持原有的数据不变
     if old:
         online_players = old.online_players if hasattr(old, 'online_players')\
-            and old.online_players else []
+            and old.online_players != None else []
         schedules = old.schedules if hasattr(old, 'schedules')\
-            and old.schedules else []
+            and old.schedules != None else []
         player_data_records = old.player_data_records if hasattr(old, 'player_data_records')\
-            and old.player_data_records else {}
+            and old.player_data_records != None else {}
 
     # 重建线程同步锁
     player_data_records_lock = threading.RLock()
