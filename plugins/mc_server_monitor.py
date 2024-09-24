@@ -9,6 +9,9 @@ import websockets
 import websockets.server
 import json
 from datetime import datetime
+import copy
+import os
+import requests
 
 
 # 定义 MCDR 插件元数据
@@ -31,10 +34,12 @@ class PluginConfig(Serializable):
     commIP: str = '127.0.0.1'
     # 与远程网站服务器通信而监听的端口号
     commPort: int = 8765
-    # MC服务器数据同步线程（ServerMonitorThread）的轮询间隔（单位：ms）
-    serverMonitorThreadInterval: int = 1000
+    # 玩家数据更新线程（PlayerDataUpdateThread）的轮询间隔（单位：ms）
+    playerDataUpdateThreadInterval: int = 1000
     # 远程网站服务器联络线程（WebsocketThread）的轮询间隔（单位：ms）
     websocketThreadInterval: int = 1000
+    # 将要统计玩家数据的存档所在的目录（建议指定绝对路径以避免一些潜在的错误）
+    worldDir: str = ''
 
 
 # 当从MC服务器收到函数执行结果时执行的回调
@@ -50,46 +55,6 @@ class MCFuncResultSchedule(object):
     
     def execute(self, result: int) -> None:
         self.callback(self.mc_func, self.args, result)
-
-
-# MC服务器上所记录的玩家数据的所有条目名称（均已去除'msm_'前缀）
-PLAYER_DATA_ITEMS: list[str] = [
-    # -----
-    # 下列记分项为游戏自动更新。
-    # -----
-
-    # 死亡数
-    'deathCount',
-    # 击杀玩家数
-    'playerKillCount',
-    # 击杀数（包括玩家和生物）
-    'totalKillCount',
-    # 生命值（包括伤害吸收值）【只读】
-    'health',
-    # 经验值【只读】
-    'xp',
-    # 等级【只读】
-    'level',
-    # 饥饿值【只读】
-    'food',
-    # 空气值【只读】
-    'air',
-    # 护甲值【只读】
-    'armor',
-
-    # -----
-    # 下列记分项游戏不会自动更新，需通过监听游戏状态进行手动更新。
-    # -----
-
-    # 放置方块数
-    'placeBlockCount',
-    # 破坏方块数
-    'breakBlockCount',
-    # 在线时长（以游戏刻为单位）
-    # 注：受限于记分板数据类型（32位有符号整型），上限值为2,147,483,647，
-    # 也就是最多只能记录约1242.76天的时长。
-    'onlineTime'
-]
 
 
 # MC玩家统计信息的所有条目
@@ -174,6 +139,9 @@ PLAYER_STATISTIC_ENTRIES: list[str] = [
 
 # 服务器上的玩家数据
 class PlayerData(object):
+    __slots__ = ('name', 'uuid','statistics')
+
+
     def __init__(self):
         # 玩家名称
         self.name: str = ''
@@ -183,14 +151,18 @@ class PlayerData(object):
         self.statistics: dict[str, int] = {}
 
 
-# 用于时刻同步MC服务器数据的线程
-class ServerMonitorThread(threading.Thread):
+class PlayerDataUpdateThread(threading.Thread):
+    """
+    用于时刻更新插件运行上下文中玩家数据的线程。
+    """
+
     def __init__(self, interval: int):
         super().__init__()
-        self.name = 'ServerMonitorThread'
-        self.stop_event = threading.Event()
-        self.daemon = False # 本线程不是守护线程，以确保对于服务器数据同步的完整性
+        self.name = 'PlayerDataUpdateThread'
+        self.daemon = False # 本线程不是守护线程，以确保插件运行上下文中玩家数据的完整性
 
+        # 用于标识线程是否将要停止的信号量
+        self.stop_event: threading.Event = threading.Event()
         # 本线程的轮询间隔（ms）
         self.interval: int = interval if interval > 0 else 1000 # 缺省值为1000ms
 
@@ -200,20 +172,41 @@ class ServerMonitorThread(threading.Thread):
             try:
                 # 先检查MC服务器是否已启动
                 if psi.is_server_running():
-                    # 定时执行MC函数，获取服务器数据
+                    # 遍历所有在线玩家，并同步其数据
                     for player in online_players:
-                        execute_msm_get_data(player,'msm_deathCount')
-                        execute_msm_get_data(player,'msm_playerKillCount')
-                        execute_msm_get_data(player,'msm_totalKillCount')
-                        execute_msm_get_data(player,'msm_health')
-                        execute_msm_get_data(player,'msm_xp')
-                        execute_msm_get_data(player,'msm_level')
-                        execute_msm_get_data(player,'msm_food')
-                        execute_msm_get_data(player,'msm_air')
-                        execute_msm_get_data(player,'msm_armor')
-                        execute_msm_get_data(player,'msm_placeBlockCount')
-                        execute_msm_get_data(player,'msm_breakBlockCount')
-                        execute_msm_get_data(player,'msm_onlineTime')
+                        player_record = None
+
+                        # 检查是否已存在该玩家的数据记录
+                        with player_data_records_lock:
+                            if player in player_data_records:
+                                # 若存在，取出该记录以进行后续玩家数据更新操作。
+                                # 此处使用浅拷贝创建玩家数据记录的副本，避免后续释放数据锁后
+                                # 对对象操作导致数据记录列表本身被修改。
+                                player_record = copy.copy(player_data_records[player])
+                            else:
+                                # 如果不存在，则创建新的记录
+                                player_data_records[player] = PlayerData()
+                                # 先记录玩家名称，UUID和统计信息等其他字段保留缺省
+                                player_data_records[player].name = player
+                        
+                        # 若找到了该玩家的数据记录
+                        if player_record is not None:
+                            # 同步该玩家的统计信息
+                            if not sync_player_statistics(player_record.name, player_record.uuid):
+                                psi.logger.warning(f'Failed to synchronize player data for {player_record.name} ({player_record.uuid}), '
+                                                    'the player data will stay unchanged.')
+
+                    # 检查并补全缺少玩家UUID的数据记录
+                    players = []
+                    with player_data_records_lock:
+                        for record in player_data_records.values():
+                            # 若UUID缺失
+                            if len(record.uuid) == 0:
+                                # 记录该玩家的名称，需要补全其UUID
+                                players.append(record.name)
+                    for player in players:
+                        # 补全玩家UUID
+                        sync_player_uuid(player)
             except Exception as ex:
                 psi.logger.error(f'Error occurred while updating player data: {ex}')
             # 休眠一段时间
@@ -277,9 +270,10 @@ class WebsocketThread(threading.Thread):
     def __init__(self, interval: int, ip: str, port: int):
         super().__init__()
         self.name = 'WebsocketThread'
-        self.stop_event = threading.Event()
         self.daemon = False # 本线程不是守护线程，以确保与远程网站服务器的交流不会被异常地中断
 
+        # 用于标识线程是否将要停止的信号量
+        self.stop_event: threading.Event = threading.Event()
         # 本线程的轮询间隔（ms）
         self.interval: int = interval if interval > 0 else 1000 # 缺省值为1000ms
         # WebSocket 监听的IP地址
@@ -361,9 +355,9 @@ class WebsocketThread(threading.Thread):
                 with player_data_records_lock:
                     for player, data in player_data_records.items():
                         # 遍历所有数据条目类型
-                        for item in PLAYER_DATA_ITEMS:
+                        for item in PLAYER_STATISTIC_ENTRIES:
                             # 注：此处能保证所有数据条目皆为整型
-                            item_val = int(getattr(data, item))
+                            item_val = int(data.statistics.get(item, 0))
                             json_data = {
                                 'id': id,
                                 'instruction': 'all_players_data',
@@ -390,103 +384,79 @@ plugin_config: PluginConfig = None
 psi: PluginServerInterface = None
 # 记录当前在线玩家（玩家名称）的列表
 online_players: list[str] = []
-# 函数执行结果的回调队列
-mc_func_schedules: Queue[MCFuncResultSchedule] = Queue()
 # 用于记录服务器上玩家数据的字典。键为玩家名称，值为 PlayerData 对象
 player_data_records: dict[str, PlayerData] = {}
 # 用于确保并发数据安全的线程同步锁
-player_data_records_lock = None
+player_data_records_lock: threading.RLock = None
 # 一些需要用到的线程
-server_monitor_thread: ServerMonitorThread = None
+player_data_update_thread: PlayerDataUpdateThread = None
 websocket_thread: WebsocketThread = None
 
 
-def execute_msm_get_data(player: str, entry: str) -> int:
-    # 生成符合MC命令语法的MC函数命令
-    command = 'function msm:get_data {player:%s,entry:%s}' % (player, entry)
-    # 将命令发送到MC服务器执行
-    psi.execute(command)
-    # 记录该函数执行结果的回调
-    args = {'player': player, 'entry': entry}
-    mc_func_schedules.put(MCFuncResultSchedule('msm:get_data', args, msm_get_data_callback))
+def sync_player_statistics(name: str, uuid: str) -> bool:
+    """
+    从MC服务器存档目录中重新加载玩家的统计信息，将该玩家最新的统计信息同步到插件运行时上下文中。
+    """
+
+    # 判断函数参数是否合法
+    if len(name) == 0 or len(uuid) == 0:
+        return False
+
+    # 定位到玩家统计信息所在目录
+    stats_dir = os.path.join(plugin_config.worldDir, 'stats')
+    # 定位到该玩家统计信息文件
+    stats_file_name = f'{uuid}.json'
+    stats_file_path = os.path.join(stats_dir, stats_file_name)
+
+    # 先判断文件是否存在
+    if os.path.exists(stats_file_path):
+        # 若存在，则读取文件内容
+        content = None
+        with open(stats_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # 解析文件中的JSON数据
+        data = json.loads(content)
+        data_stats = data['stats']
+        # 准备同步该玩家的数据
+        with player_data_records_lock:
+            # 先得到该玩家的统计信息条目
+            player_data_record = player_data_records[name]
+            for stat in data_stats.values(): # 忽略一级统计数据类型（统计数据命名空间）
+                for k, v in stat.items():
+                    # 先判断该统计数据类型是否是已知的（该统计数据条目是否合法）
+                    if k in PLAYER_STATISTIC_ENTRIES:
+                        # 若是，则更新玩家数据记录中的对应统计数据条目
+                        player_data_record.statistics[k] = v
+        return True
+    else:
+        # 文件不存在，无法更新该玩家的数据
+        psi.logger.warning(f'Player {name} ({uuid}) has no statistics data file.')
+        return False
 
 
-def msm_get_data_callback(func: str, args: dict, result: int) -> None:
-    global player_data_records
+def sync_player_uuid(name: str) -> bool:
+    """
+    调用MOJANG API 获取指定玩家的UUID，并更新到该玩家的数据记录中。
+    """
 
-    # 获取本次回调对应的玩家名称
-    player = args['player']
-    # 查询字典中是否已注册有该玩家的信息
-    exist_flag = False
-    # 访问player_data_records前先加锁
-    with player_data_records_lock:
-        for name, data in player_data_records.items():
-            if name == player:
-                data.name = player
-                # 若查找到，将MC服务器返回的信息更新到字典中去
-                match args['entry']:
-                    case 'msm_deathCount':
-                        data.deathCount = result
-                    case 'msm_playerKillCount':
-                        data.playerKillCount = result
-                    case 'msm_totalKillCount':
-                        data.totalKillCount = result
-                    case 'msm_health':
-                        data.health = result
-                    case 'msm_xp':
-                        data.xp = result
-                    case 'msm_level':
-                        data.level = result
-                    case 'msm_food':
-                        data.food = result
-                    case 'msm_air':
-                        data.air = result
-                    case 'msm_armor':
-                        data.armor = result
-                    case 'msm_placeBlockCount':
-                        data.placeBlockCount = result
-                    case 'msm_breakBlockCount':
-                        data.breakBlockCount = result
-                    case 'msm_onlineTime':
-                        data.onlineTime = result
-                player_data_records[player] = data
-                # 将标志变量置为True
-                exist_flag = True
-                break
-        # 若该玩家信息未注册，则创建新的PlayerData对象，并将MC服务器返回的信息更新到对象中
-        if not exist_flag:
-            data = PlayerData()
-            data.name = player
-            match args['entry']:
-                case 'msm_deathCount':
-                    data.deathCount = result
-                case 'msm_playerKillCount':
-                    data.playerKillCount = result
-                case 'msm_totalKillCount':
-                    data.totalKillCount = result
-                case 'msm_health':
-                    data.health = result
-                case 'msm_xp':
-                    data.xp = result
-                case 'msm_level':
-                    data.level = result
-                case 'msm_food':
-                    data.food = result
-                case 'msm_air':
-                    data.air = result
-                case 'msm_armor':
-                    data.armor = result
-                case 'msm_placeBlockCount':
-                    data.placeBlockCount = result
-                case 'msm_breakBlockCount':
-                    data.breakBlockCount = result
-                case 'msm_onlineTime':
-                    data.onlineTime = result
-            player_data_records[player] = data
-
-        # 打印调试信息
-        psi.logger.debug(f'Player {player} data updated: {player_data_records[player]}')
-        psi.logger.debug(f'Now the player data records: {player_data_records}')
+    # 构造用于请求UUID的URL
+    url = f'https://api.mojang.com/users/profiles/minecraft/{name}'
+    # 发送请求并获取响应
+    psi.logger.info(f'Requesting player {name} UUID from Mojang API...')
+    response = requests.get(url)
+    # 若请求成功，则解析响应内容
+    if response.status_code == 200:
+        data = response.json()
+        # 取得UUID并更新玩家数据记录
+        uuid = data['id']
+        psi.logger.info(f'Player {name} UUID obtained from Mojang API: {uuid}')
+        with player_data_records_lock:
+            player_data_records[name].uuid = uuid
+        return True
+    else:
+        # 请求失败，无法更新该玩家的数据
+        psi.logger.warning(f'Failed to update player {name} UUID from Mojang API.')
+        return False
 
 
 # ---------------
@@ -499,7 +469,7 @@ def on_load(server: PluginServerInterface, old) -> None:
     global psi
     global online_players, schedules, player_data_records
     global player_data_records_lock
-    global server_monitor_thread, websocket_thread
+    global player_data_update_thread, websocket_thread
 
     # 保存 PluginServerInterface 对象以供全局使用
     psi = server
@@ -520,8 +490,8 @@ def on_load(server: PluginServerInterface, old) -> None:
     player_data_records_lock = threading.RLock()
 
     # 重建并启动相关线程
-    server_monitor_thread = ServerMonitorThread(plugin_config.serverMonitorThreadInterval)
-    server_monitor_thread.start()
+    player_data_update_thread = PlayerDataUpdateThread(plugin_config.playerDataUpdateThreadInterval)
+    player_data_update_thread.start()
     websocket_thread = WebsocketThread(
         plugin_config.websocketThreadInterval,
         plugin_config.commIP,
@@ -537,9 +507,6 @@ def on_player_joined(server: PluginServerInterface, player: str, info: Info) -> 
     online_players.append(player)
     server.logger.info(f'Player {player} joined the game')
     server.logger.info(f'Online players: {online_players}')
-    
-    # for debug purpose
-    execute_msm_get_data(player, 'msm_onlineTime')
 
 
 def on_player_left(server: PluginServerInterface, player: str) -> None:
@@ -549,25 +516,9 @@ def on_player_left(server: PluginServerInterface, player: str) -> None:
     server.logger.info(f'Online players: {online_players}')
 
 
-def on_info(server: PluginServerInterface, info: Info) -> None:
-    # 使用正则表达式判断该输出是否为MC服务器函数的执行结果
-    pattern = r"Function [:\w]+ returned \d+"
-    if not info.is_user and re.fullmatch(pattern, info.content):
-        # 若是，解析该执行结果
-        parts = info.content.split(' ')
-        func = parts[1] # 取得函数名
-        res = int(parts[3]) # 取得函数执行结果
-
-        # 若回调列表不为空，取队列中回调并执行
-        if not mc_func_schedules.empty():
-            sched = mc_func_schedules.get()
-            if sched.mc_func == func:
-                sched.execute(res)
-
-
 def on_unload(server: PluginServerInterface) -> None:
     print(f'Unloading plugin {PLUGIN_METADATA["name"]}...')
 
     # 卸载插件时，停止相关线程
-    server_monitor_thread.stop()
+    player_data_update_thread.stop()
     websocket_thread.stop()
