@@ -92,47 +92,95 @@ PLAYER_DATA_ITEMS: list[str] = [
 ]
 
 
+# MC玩家统计信息的所有条目
+PLAYER_STATISTIC_ENTRIES: list[str] = [
+    'minecraft:animals_bred', # 繁殖动物次数
+    'minecraft:clean_armor', # 清洗盔甲次数
+    'minecraft:clean_banner', # 清洗旗帜次数
+    'minecraft:open_barrel', # 木桶打开次数
+    'minecraft:bell_ring', # 鸣钟次数
+    'minecraft:eat_cake_slice', # 吃掉的蛋糕片数
+    'minecraft:fill_cauldron', # 炼药锅装水次数
+    'minecraft:open_chest', # 箱子打开次数
+    'minecraft:damage_absorbed', # 吸收的伤害
+    'minecraft:damage_blocked_by_shield', # 盾牌抵挡的伤害
+    'minecraft:damage_dealt', # 造成伤害
+    'minecraft:damage_dealt_absorbed', # 造成伤害（被吸收）
+    'minecraft:damage_dealt_resisted', # 造成伤害（被抵挡）
+    'minecraft:damage_resisted', # 抵挡的伤害
+    'minecraft:damage_taken', # 受到伤害
+    'minecraft:inspect_dispenser', # 搜查发射器次数
+    'minecraft:boat_one_cm', # 坐船移动距离
+    'minecraft:aviate_one_cm', # 鞘翅滑行距离
+    'minecraft:horse_one_cm', # 骑马移动距离
+    'minecraft:minecart_one_cm', # 坐矿车移动距离
+    'minecraft:pig_one_cm', # 骑猪移动距离
+    'minecraft:strider_one_cm', # 骑炽足兽移动距离
+    'minecraft:climb_one_cm', # 已攀爬距离
+    'minecraft:crouch_one_cm', # 潜行距离
+    'minecraft:fall_one_cm', # 摔落高度
+    'minecraft:fly_one_cm', # 飞行距离
+    'minecraft:sprint_one_cm', # 疾跑距离
+    'minecraft:swim_one_cm', # 游泳距离
+    'minecraft:walk_one_cm', # 行走距离
+    'minecraft:walk_on_water_one_cm', # 水面行走距离
+    'minecraft:walk_under_water_one_cm', # 水下行走距离
+    'minecraft:inspect_dropper', # 搜查投掷器次数
+    'minecraft:open_enderchest', # 末影箱打开次数
+    'minecraft:fish_caught', # 捕鱼数
+    'minecraft:leave_game', # 游戏退出次数
+    'minecraft:inspect_hopper', # 搜查漏斗次数
+    'minecraft:interact_with_anvil', # 与铁砧交互次数
+    'minecraft:interact_with_beacon', # 与信标交互次数
+    'minecraft:interact_with_blast_furnace', # 与高炉交互次数
+    'minecraft:interact_with_brewingstand', # 与酿造台交互次数
+    'minecraft:interact_with_campfire', # 与营火交互次数
+    'minecraft:interact_with_cartography_table', # 与制图台交互次数
+    'minecraft:interact_with_crafting_table', # 与工作台交互次数
+    'minecraft:interact_with_furnace', # 与熔炉交互次数
+    'minecraft:interact_with_grindstone', # 与砂轮交互次数
+    'minecraft:interact_with_lectern', # 与讲台交互次数
+    'minecraft:interact_with_loom', # 与织布机交互次数
+    'minecraft:interact_with_smithing_table', # 与锻造台交互次数
+    'minecraft:interact_with_smoker', # 与烟熏炉交互次数
+    'minecraft:interact_with_stonecutter', # 与切石机交互次数
+    'minecraft:drop', # 物品掉落
+    'minecraft:enchant_item', # 物品附魔次数
+    'minecraft:jump', # 跳跃次数
+    'minecraft:mob_kills', # 生物击杀数
+    'minecraft:play_record', # 播放唱片数
+    'minecraft:play_noteblock', # 音符盒播放次数
+    'minecraft:tune_noteblock', # 音符盒调音次数
+    'minecraft:deaths', # 死亡次数
+    'minecraft:pot_flower', # 盆栽种植数
+    'minecraft:player_kills', # 玩家击杀数
+    'minecraft:raid_trigger', # 触发袭击次数
+    'minecraft:raid_win', # 袭击胜利次数
+    'minecraft:clean_shulker_box', # 潜影盒清洗次数
+    'minecraft:open_shulker_box', # 潜影盒打开次数
+    'minecraft:time_since_death', # 自上次死亡
+    'minecraft:time_since_rest', # 自上次入眠
+    'minecraft:sneak_time', # 潜行时间
+    'minecraft:talked_to_villager', # 村民交互次数
+    'minecraft:target_hit', # 击中标靶次数
+    'minecraft:play_time', # 游戏时长
+    'minecraft:total_world_time', # 世界打开时间
+    'minecraft:sleep_in_bed', # 躺在床上的次数
+    'minecraft:traded_with_villager', # 村民交易次数
+    'minecraft:trigger_trapped_chest', # 陷阱箱触发次数
+    'minecraft:use_cauldron', # 从炼药锅取水次数
+]
+
+
 # 服务器上的玩家数据
 class PlayerData(object):
     def __init__(self):
         # 玩家名称
         self.name: str = ''
-
-        # -----
-        # 下列记分项为游戏自动更新。
-        # -----
-
-        # 死亡数
-        self.deathCount: int = 0
-        # 击杀玩家数
-        self.playerKillCount: int = 0
-        # 击杀数（包括玩家和生物）
-        self.totalKillCount: int = 0
-        # 生命值（包括伤害吸收值）【只读】
-        self.health: int = 0
-        # 经验值【只读】
-        self.xp: int = 0
-        # 等级【只读】
-        self.level: int = 0
-        # 饥饿值【只读】
-        self.food: int = 0
-        # 空气值【只读】
-        self.air: int = 0
-        # 护甲值【只读】
-        self.armor: int = 0
-
-        # -----
-        # 下列记分项游戏不会自动更新，需通过监听游戏状态进行手动更新。
-        # -----
-
-        # 放置方块数
-        self.placeBlockCount: int = 0
-        # 破坏方块数
-        self.breakBlockCount: int = 0
-        # 在线时长（以游戏刻为单位）
-        # 注：受限于记分板数据类型（32位有符号整型），上限值为2,147,483,647，
-        # 也就是最多只能记录约1242.76天的时长。
-        self.onlineTime: int = 0
+        # 玩家的UUID
+        self.uuid: str = ''
+        # 玩家统计信息
+        self.statistics: dict[str, int] = {}
 
 
 # 用于时刻同步MC服务器数据的线程
