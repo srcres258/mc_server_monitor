@@ -1,7 +1,5 @@
 from mcdreforged.api.all import *
-import re
 from typing import Callable
-from queue import Queue
 import threading
 import time
 import asyncio
