@@ -38,6 +38,8 @@ class PluginConfig(Serializable):
     websocketThreadInterval: int = 1000
     # 将要统计玩家数据的存档所在的目录（建议指定绝对路径以避免一些潜在的错误）
     worldDir: str = ''
+    # 白名单文件（whitelist.json）所在的目录
+    whitelistDir: str = ''
 
 
 # 当从MC服务器收到函数执行结果时执行的回调
@@ -170,41 +172,19 @@ class PlayerDataUpdateThread(threading.Thread):
             try:
                 # 先检查MC服务器是否已启动
                 if psi.is_server_running():
-                    # 遍历所有在线玩家，并同步其数据
-                    for player in online_players:
-                        player_record = None
-
-                        # 检查是否已存在该玩家的数据记录
-                        with player_data_records_lock:
-                            if player in player_data_records:
-                                # 若存在，取出该记录以进行后续玩家数据更新操作。
-                                # 此处使用浅拷贝创建玩家数据记录的副本，避免后续释放数据锁后
-                                # 对对象操作导致数据记录列表本身被修改。
-                                player_record = copy.copy(player_data_records[player])
-                            else:
-                                # 如果不存在，则创建新的记录
-                                player_data_records[player] = PlayerData()
-                                # 先记录玩家名称，UUID和统计信息等其他字段保留缺省
-                                player_data_records[player].name = player
-                        
-                        # 若找到了该玩家的数据记录
-                        if player_record is not None:
-                            # 同步该玩家的统计信息
-                            if not sync_player_statistics(player_record.name, player_record.uuid):
-                                psi.logger.warning(f'Failed to synchronize player data for {player_record.name} ({player_record.uuid}), '
-                                                    'the player data will stay unchanged.')
-
-                    # 检查并补全缺少玩家UUID的数据记录
-                    players = []
+                    # 定义玩家名称到UUID的字典
+                    uuid_map = {}
+                    # 遍历玩家的数据记录
                     with player_data_records_lock:
-                        for record in player_data_records.values():
-                            # 若UUID缺失
-                            if len(record.uuid) == 0:
-                                # 记录该玩家的名称，需要补全其UUID
-                                players.append(record.name)
-                    for player in players:
-                        # 补全玩家UUID
-                        sync_player_uuid(player)
+                        for name, record in player_data_records.items():
+                            # 记录玩家名称和UUID
+                            uuid_map[name] = record.uuid
+                    # 遍历所建立的字典
+                    for name, uuid in uuid_map.items():
+                        # 根据所得玩家列表，对玩家数据依次进行同步
+                        if not sync_player_statistics(name, uuid):
+                            # 该玩家的数据同步失败
+                            psi.logger.warning(f'Failed to synchronize player data for {name} ({uuid})')
             except Exception as ex:
                 psi.logger.error(f'Error occurred while updating player data: {ex}')
             # 休眠一段时间
@@ -380,8 +360,6 @@ class WebsocketThread(threading.Thread):
 plugin_config: PluginConfig = None
 # MCDR 的 PluginServerInterface 对象，用于与 MCDR 的相关 API 交互
 psi: PluginServerInterface = None
-# 记录当前在线玩家（玩家名称）的列表
-online_players: list[str] = []
 # 用于记录服务器上玩家数据的字典。键为玩家名称，值为 PlayerData 对象
 player_data_records: dict[str, PlayerData] = {}
 # 用于确保并发数据安全的线程同步锁
@@ -389,6 +367,54 @@ player_data_records_lock: threading.RLock = None
 # 一些需要用到的线程
 player_data_update_thread: PlayerDataUpdateThread = None
 websocket_thread: WebsocketThread = None
+
+
+def load_player_data_records() -> bool:
+    """
+    从白名单文件中加载玩家列表，并由此构建玩家数据记录。
+    """
+
+    # 构造白名单文件的路径
+    whitelist_file_path = os.path.join(plugin_config.whitelistDir, 'whitelist.json')
+    # 先判断白名单文件是否存在
+    if not os.path.exists(whitelist_file_path):
+        # 文件不存在，无法加载玩家列表
+        psi.logger.warning(f'Whitelist file {whitelist_file_path} does not exist.')
+        return False
+    # 读取文件内容
+    content = None
+    with open(whitelist_file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    # 判断是否读取成功
+    if content is None or len(content) == 0:
+        # 读取失败
+        psi.logger.warning(f'Failed to load whitelist players from {whitelist_file_path}. '
+                            'The list will remain empty or unchanged.')
+        return False
+    else:
+        # 解析JSON数据
+        data = json.loads(content)
+        # 根据所得JSON数据构建玩家数据记录
+        players = []
+        for piece in data:
+            # 读数据前先上锁
+            with player_data_records_lock:
+                players.append(piece['name'])
+                # 先判断该玩家是否已存在于记录中
+                if piece['name'] in player_data_records.keys():
+                    # 若已存在，则更新其UUID
+                    player_data_records[piece['name']].uuid = piece['uuid']
+                else:
+                    # 若不存在，则创建新的玩家数据记录
+                    pd = PlayerData()
+                    # 填入玩家名称和UUID
+                    pd.name = piece['name']
+                    pd.uuid = piece['uuid']
+                    # 保存该记录
+                    player_data_records[piece['name']] = pd
+        
+        psi.logger.info(f'Loaded {len(player_data_records)} players from the whitelist file: {", ".join(players)}')
+        return True
 
 
 def sync_player_statistics(name: str, uuid: str) -> bool:
@@ -432,31 +458,6 @@ def sync_player_statistics(name: str, uuid: str) -> bool:
         return False
 
 
-def sync_player_uuid(name: str) -> bool:
-    """
-    调用MOJANG API 获取指定玩家的UUID，并更新到该玩家的数据记录中。
-    """
-
-    # 构造用于请求UUID的URL
-    url = f'https://api.mojang.com/users/profiles/minecraft/{name}'
-    # 发送请求并获取响应
-    psi.logger.info(f'Requesting player {name} UUID from Mojang API...')
-    response = requests.get(url)
-    # 若请求成功，则解析响应内容
-    if response.status_code == 200:
-        data = response.json()
-        # 取得UUID并更新玩家数据记录
-        uuid = data['id']
-        psi.logger.info(f'Player {name} UUID obtained from Mojang API: {uuid}')
-        with player_data_records_lock:
-            player_data_records[name].uuid = uuid
-        return True
-    else:
-        # 请求失败，无法更新该玩家的数据
-        psi.logger.warning(f'Failed to update player {name} UUID from Mojang API.')
-        return False
-
-
 # ---------------
 # MCDR 事件回调函数
 # ---------------
@@ -465,7 +466,7 @@ def sync_player_uuid(name: str) -> bool:
 def on_load(server: PluginServerInterface, old) -> None:
     global plugin_config
     global psi
-    global online_players, schedules, player_data_records
+    global whitelist_players, schedules, player_data_records
     global player_data_records_lock
     global player_data_update_thread, websocket_thread
 
@@ -477,15 +478,19 @@ def on_load(server: PluginServerInterface, old) -> None:
 
     # 重新加载插件时，保持原有的数据不变
     if old:
-        online_players = old.online_players if hasattr(old, 'online_players')\
-            and old.online_players != None else []
+        whitelist_players = old.whitelist_players if hasattr(old, 'whitelist_players')\
+            and old.whitelist_players != None else []
         schedules = old.schedules if hasattr(old, 'schedules')\
             and old.schedules != None else []
         player_data_records = old.player_data_records if hasattr(old, 'player_data_records')\
             and old.player_data_records != None else {}
 
-    # 重建线程同步锁
+    # 重建数据读写锁
     player_data_records_lock = threading.RLock()
+        
+    # 重新从白名单文件中加载玩家列表
+    if not load_player_data_records():
+        psi.logger.warning('Failed to load player data records from the whitelist file!')
 
     # 重建并启动相关线程
     player_data_update_thread = PlayerDataUpdateThread(plugin_config.playerDataUpdateThreadInterval)
@@ -498,20 +503,6 @@ def on_load(server: PluginServerInterface, old) -> None:
     websocket_thread.start()
 
     server.logger.info(f'Plugin {PLUGIN_METADATA['name']} is now loaded')
-
-
-def on_player_joined(server: PluginServerInterface, player: str, info: Info) -> None:
-    # 当玩家加入，记录玩家到在线玩家列表
-    online_players.append(player)
-    server.logger.info(f'Player {player} joined the game')
-    server.logger.info(f'Online players: {online_players}')
-
-
-def on_player_left(server: PluginServerInterface, player: str) -> None:
-    # 当玩家离开，从在线玩家列表中移除
-    online_players.remove(player)
-    server.logger.info(f'Player {player} left the game')
-    server.logger.info(f'Online players: {online_players}')
 
 
 def on_unload(server: PluginServerInterface) -> None:
