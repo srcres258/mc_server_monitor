@@ -1,5 +1,4 @@
 from mcdreforged.api.all import *
-from typing import Callable
 import threading
 import time
 import asyncio
@@ -7,9 +6,7 @@ import websockets
 import websockets.server
 import json
 from datetime import datetime
-import copy
 import os
-import requests
 
 
 # 定义 MCDR 插件元数据
@@ -26,8 +23,11 @@ PLUGIN_METADATA = {
 }
 
 
-# 定义本 MCDR 插件的配置选项
 class PluginConfig(Serializable):
+    """
+    定义本 MCDR 插件的配置选项。
+    """
+    
     # 与远程网站服务器通信而监听的IP地址
     commIP: str = '127.0.0.1'
     # 与远程网站服务器通信而监听的端口号
@@ -40,21 +40,6 @@ class PluginConfig(Serializable):
     worldDir: str = ''
     # 白名单文件（whitelist.json）所在的目录
     whitelistDir: str = ''
-
-
-# 当从MC服务器收到函数执行结果时执行的回调
-class MCFuncResultSchedule(object):
-    def __init__(self, mc_func: str, args: dict, callback: Callable[[str, dict, int], None]):
-        # MC函数名称
-        self.mc_func: str = mc_func
-        # MC函数的参数列表，为一个字典
-        self.args: dict = args
-        # 当MC函数执行完成时，触发该回调函数
-        self.callback: Callable[[str, dict, int], None] = callback
-
-    
-    def execute(self, result: int) -> None:
-        self.callback(self.mc_func, self.args, result)
 
 
 # MC玩家统计信息的所有条目
@@ -137,8 +122,11 @@ PLAYER_STATISTIC_ENTRIES: list[str] = [
 ]
 
 
-# 服务器上的玩家数据
 class PlayerData(object):
+    """
+    用于存储玩家数据的数据类。
+    """
+
     __slots__ = ('name', 'uuid','statistics')
 
 
@@ -464,6 +452,8 @@ def sync_player_statistics(name: str, uuid: str) -> bool:
 
 
 def on_load(server: PluginServerInterface, old) -> None:
+    """插件加载回调函数"""
+
     global plugin_config
     global psi
     global whitelist_players, schedules, player_data_records
@@ -506,6 +496,8 @@ def on_load(server: PluginServerInterface, old) -> None:
 
 
 def on_unload(server: PluginServerInterface) -> None:
+    """插件卸载回调函数"""
+
     print(f'Unloading plugin {PLUGIN_METADATA["name"]}...')
 
     # 卸载插件时，停止相关线程
