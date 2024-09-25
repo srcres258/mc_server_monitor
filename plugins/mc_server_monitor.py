@@ -213,19 +213,7 @@ type(num 1击杀数 2死亡数 3在线时长……后续由mc插件开发者补�
 quantity(num 数量):
 date(date精确到小时 且分钟数不过半就归零11:30-12:29都归为12:00)：
 }}·
-type的种类：
-死亡数 deathCount
-击杀玩家数 playerKillCount
-击杀数（包括玩家和生物） totalKillCount
-生命值（包括伤害吸收值）【只读】 health
-经验值【只读】 xp
-等级【只读】 level
-饥饿值【只读】 food
-空气值【只读】 air
-护甲值【只读】 armor
-放置方块数 placeBlockCount
-破坏方块数 breakBlockCount
-在线时长（以游戏刻为单位） onlineTime
+type的种类为MC中所定义的所有玩家统计信息（https://zh.minecraft.wiki/w/%E7%BB%9F%E8%AE%A1%E4%BF%A1%E6%81%AF），取相应统计信息的命名空间ID。如“繁殖动物次数”的命名空间ID为“minecraft:animals_bred”，则type字段的值即为“minecraft:animals_bred”。
 如上为一条数据。
 网站后端服务器向mc服务器发送命令后，mc服务器每次向网站后端服务器发送一条数据，直到所有数据发送完毕
 """
